@@ -14,8 +14,14 @@ app.use(express.json());
 
 // =======================
 // MongoDB URI
-// =======================
-const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASS}@cluster0.9nhwetk.mongodb.net/?appName=Cluster0`;
+
+const uri = `mongodb+srv://${process.env.DB_USERNAME}:${process.env.DB_PASS}@cluster0.d0osb03.mongodb.net/?appName=Cluster0`;
+if (!uri) {
+  console.warn(
+    "Missing MongoDB configuration: set MONGODB_URI or (DB_USERNAME and DB_PASS)"
+  );
+}
+
 
 // Create Mongo Client
 const client = new MongoClient(uri, {
@@ -29,10 +35,57 @@ const client = new MongoClient(uri, {
 let propertyCollection;
 let ratingsCollection;
 
+let dbInitPromise;
+let dbInitError;
+
 // =======================
 // DB helpers
 // =======================
-function ensureDbCollections(res) {
+async function initDb() {
+  if (!uri) {
+    throw new Error(
+      "Missing MongoDB configuration: set MONGODB_URI or (DB_USERNAME and DB_PASS)"
+    );
+  }
+
+  // Connect to MongoDB (serverless note: this promise is cached per warm lambda)
+  // await client.connect();
+
+  // Test ping
+  await client.db("admin").command({ ping: 1 });
+  console.log("✅ MongoDB Connected Successfully!");
+
+  const homeNestDB = client.db("homeNest_database");
+  propertyCollection = homeNestDB.collection("properties");
+  ratingsCollection = homeNestDB.collection("ratings");
+}
+
+function startDbInit() {
+  if (!dbInitPromise) {
+    dbInitPromise = initDb().catch((err) => {
+      dbInitError = err;
+      throw err;
+    });
+  }
+  return dbInitPromise;
+}
+
+// Kick off initialization at module load, but routes also await this to avoid race conditions.
+startDbInit().catch((err) => {
+  console.error("❌ MongoDB Initialization Failed:", err);
+});
+
+async function ensureDbCollections(res) {
+  try {
+    await startDbInit();
+  } catch (err) {
+    res.status(500).json({
+      message: "Database initialization failed",
+      code: "DB_INIT_FAILED",
+    });
+    return false;
+  }
+
   if (!propertyCollection || !ratingsCollection) {
     res.status(500).json({
       message: "Database not initialized",
@@ -40,36 +93,17 @@ function ensureDbCollections(res) {
     });
     return false;
   }
+
   return true;
 }
 
-// =======================
-// Main Run Function
-// =======================
-async function run() {
-  try {
-    // Connect to MongoDB
-    await client.connect();
-
-    // Test ping
-    await client.db("admin").command({ ping: 1 });
-    console.log("✅ MongoDB Connected Successfully!");
-
-    const homeNestDB = client.db("homeNest_database");
-    propertyCollection = homeNestDB.collection("properties");
-    ratingsCollection = homeNestDB.collection("ratings");
-  } catch (error) {
-    console.error("❌ MongoDB Connection Failed:", error);
-  }
-}
-
-run().catch(console.dir);
+// (DB init happens via startDbInit() above)
 
 // =======================
 // Property APIs
 // =======================
 app.post("/property", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const newProperty = req.body;
     const result = await propertyCollection.insertOne(newProperty);
@@ -81,11 +115,12 @@ app.post("/property", async (req, res) => {
 });
 
 app.post("/properties", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const newProperty = req.body;
     const result = await propertyCollection.insertOne(newProperty);
     res.send(result);
+    console.log("New properties added:", result);
   } catch (error) {
     console.error("Error in POST /properties:", error);
     res.status(500).json({ message: "Failed to create property" });
@@ -93,7 +128,7 @@ app.post("/properties", async (req, res) => {
 });
 
 app.get("/all-properties", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const result = await propertyCollection
       .find()
@@ -107,7 +142,7 @@ app.get("/all-properties", async (req, res) => {
 });
 
 app.get("/latest-properties", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const result = await propertyCollection
       .find()
@@ -122,7 +157,7 @@ app.get("/latest-properties", async (req, res) => {
 });
 
 app.get("/property/:id", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const id = req.params.id;
     const result = await propertyCollection.findOne({
@@ -136,7 +171,7 @@ app.get("/property/:id", async (req, res) => {
 });
 
 app.get("/property", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const userEmail = req.query.email;
     const result = await propertyCollection
@@ -150,7 +185,7 @@ app.get("/property", async (req, res) => {
 });
 
 app.delete("/property/:id", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const id = req.params.id;
     const result = await propertyCollection.deleteOne({
@@ -164,7 +199,7 @@ app.delete("/property/:id", async (req, res) => {
 });
 
 app.patch("/property/:id", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const id = req.params.id;
     const updateData = req.body;
@@ -185,7 +220,7 @@ app.patch("/property/:id", async (req, res) => {
 // Ratings APIs
 // =======================
 app.post("/ratings", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const ratingsBody = req.body;
     const result = await ratingsCollection.insertOne(ratingsBody);
@@ -197,7 +232,7 @@ app.post("/ratings", async (req, res) => {
 });
 
 app.get("/ratings", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const userEmail = req.query.email;
     const result = await ratingsCollection
@@ -211,7 +246,7 @@ app.get("/ratings", async (req, res) => {
 });
 
 app.delete("/ratings/:id", async (req, res) => {
-  if (!ensureDbCollections(res)) return;
+  if (!(await ensureDbCollections(res))) return;
   try {
     const id = req.params.id;
     const result = await ratingsCollection.deleteOne({
@@ -227,8 +262,20 @@ app.delete("/ratings/:id", async (req, res) => {
 // =======================
 // Root API
 // =======================
-app.get("/", (req, res) => {
+app.get("/", async (req, res) => {
+  const ok = await ensureDbCollections(res);
+  if (!ok) return;
+
   res.send("api working fine!");
+});
+
+app.get("/healthz", async (req, res) => {
+  try {
+    await startDbInit();
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, code: "DB_INIT_FAILED" });
+  }
 });
 
 // =======================
